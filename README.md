@@ -250,7 +250,9 @@ tests/              testy (pytest) z własnymi przykładowymi książkami
 
 ## Licencje i uwagi prawne
 
-- Kod programu: do użytku prywatnego autora repozytorium (licencja do ustalenia).
+- Kod programu: [Paid Reuse Source-Available License v1.0](LICENSE) — kod można bezpłatnie przeglądać,
+  uruchamiać na własny użytek (osobisty, edukacyjny, testowy) i zgłaszać poprawki; wykorzystanie go
+  w innych projektach wymaga licencji od autora. Szczegóły w pliku [LICENSE](LICENSE).
 - **XTTS v2**: [Coqui Public Model License](https://coqui.ai/cpml) — tylko użytek niekomercyjny; akceptujesz ją
   w programie przed instalacją.
 - **Głosy Piper**: licencje poszczególnych głosów — zob. [rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices).
