@@ -27,7 +27,11 @@ $keep = Join-Path $dist "_data_keep"
 if (Test-Path $data) { Move-Item $data $keep }
 
 Write-Host "== PyInstaller"
-& $py -m PyInstaller --noconfirm --clean --distpath $dist --workpath (Join-Path $root "build") packaging\BookReader.spec
+# Intermediate files go to %TEMP% and are removed afterwards: build\BookReader\BookReader.exe looked
+# like the program but cannot run (it has no libraries next to it).
+$work = Join-Path $env:TEMP "bookreader_pyinstaller"
+& $py -m PyInstaller --noconfirm --clean --distpath $dist --workpath $work packaging\BookReader.spec
+Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
 if ($LASTEXITCODE -ne 0) { if (Test-Path $keep) { New-Item -ItemType Directory -Force (Join-Path $dist "BookReader") | Out-Null; Move-Item $keep $data }; throw "PyInstaller failed" }
 
 Write-Host "== autotest spakowanego programu"
