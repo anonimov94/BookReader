@@ -42,6 +42,16 @@ def _soft_clip(x: np.ndarray, knee: float = 0.85) -> np.ndarray:
     return x
 
 
+def apply_prosody(audio: np.ndarray, speed: float, pitch: float) -> np.ndarray:
+    """Speed and pitch for one sentence (Rubber Band). Thread-safe and stateless, so the
+    player runs it in the synthesis workers ahead of time instead of between sentences."""
+    if audio.size == 0 or (abs(speed - 1.0) < 1e-3 and abs(pitch) < 1e-3):
+        return audio
+    out = time_stretch(audio[np.newaxis, :], SAMPLE_RATE, stretch_factor=float(speed),
+                       pitch_shift_in_semitones=float(pitch), high_quality=True)
+    return out[0].astype(np.float32, copy=False)
+
+
 class DSPChain:
     """Thread-safe: the GUI changes settings while the player thread processes audio."""
 
@@ -70,13 +80,8 @@ class DSPChain:
         self.apply()
 
     def prosody(self, audio: np.ndarray) -> np.ndarray:
-        """Speed and pitch for one whole sentence (Rubber Band, formant-friendly)."""
-        s = self.settings
-        if audio.size == 0 or (abs(s.speed - 1.0) < 1e-3 and abs(s.pitch) < 1e-3):
-            return audio
-        out = time_stretch(audio[np.newaxis, :], SAMPLE_RATE, stretch_factor=float(s.speed),
-                           pitch_shift_in_semitones=float(s.pitch), high_quality=True)
-        return out[0].astype(np.float32, copy=False)
+        """Speed and pitch for one whole sentence with the current settings."""
+        return apply_prosody(audio, self.settings.speed, self.settings.pitch)
 
     def process_block(self, block: np.ndarray) -> np.ndarray:
         with self._lock:

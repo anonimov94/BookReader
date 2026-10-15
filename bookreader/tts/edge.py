@@ -2,13 +2,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import threading
+import time
 
 import edge_tts
 import miniaudio
 import numpy as np
 
+from ..paths import APP_DIR
 from .base import SAMPLE_RATE, TTSEngine, Voice
+
+VOICES_CACHE = os.path.join(APP_DIR, "cache", "edge_voices.json")
 
 # Multilingual neural voices read Polish well, which widens the choice beyond Zofia/Marek.
 
@@ -27,9 +33,33 @@ class EdgeTTSEngine(TTSEngine):
     def _run(self, coro):
         return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
 
+    def _raw_voices(self) -> list[dict]:
+        """Voice list from a disk cache (refreshed weekly) so startup needs no network round trip;
+        a stale cache is still used when offline."""
+        fresh = os.path.exists(VOICES_CACHE) and time.time() - os.path.getmtime(VOICES_CACHE) < 7 * 86400
+        if fresh:
+            try:
+                with open(VOICES_CACHE, encoding="utf-8") as f:
+                    return json.load(f)
+            except (OSError, ValueError):
+                pass
+        try:
+            raw = self._run(edge_tts.list_voices())
+        except Exception:
+            if os.path.exists(VOICES_CACHE):
+                with open(VOICES_CACHE, encoding="utf-8") as f:
+                    return json.load(f)
+            raise
+        try:
+            with open(VOICES_CACHE, "w", encoding="utf-8") as f:
+                json.dump(raw, f)
+        except OSError:
+            pass
+        return raw
+
     def voices(self) -> list[Voice]:
         if self._voices is None:
-            raw = self._run(edge_tts.list_voices())
+            raw = self._raw_voices()
             out = []
             for v in raw:
                 locale, short = v["Locale"], v["ShortName"]

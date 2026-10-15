@@ -1,8 +1,10 @@
 """Background translation that runs ahead of the reader.
 
 The worker translates paragraphs in book order starting at the reader's position
-(`focus`). The first batch after a jump is a single paragraph so reading can start
-quickly; later batches are larger for better context. Results are stored in SQLite.
+(`focus`), but only as far ahead as `lookahead_chars` of source text (about the next
+couple of minutes of reading) — not the whole book. The first batch after a jump is a
+single paragraph so reading can start quickly; later batches are larger for better
+context. Results are stored in SQLite.
 """
 from __future__ import annotations
 
@@ -15,18 +17,30 @@ from .base import TranslationContext, Translator
 from .glossary import Glossary
 from .store import TranslationStore
 
-LOOKAHEAD = 40           # paragraphs translated ahead of the reader (unless translate_all)
+# How far ahead of the reader to translate, in characters of source text
+# (a narrator reads ~15 characters per second, so 2000 ≈ 2 minutes).
+LOOKAHEAD_CHOICES = [
+    (0, "tylko bieżący akapit"),
+    (1000, "~1 minuta czytania"),
+    (2000, "~2 minuty czytania (zalecane)"),
+    (5000, "~5 minut czytania"),
+    (15000, "~15 minut czytania"),
+    (-1, "cały bieżący rozdział"),
+]
+DEFAULT_LOOKAHEAD = 2000
 BATCH_CHARS = 1800
 BATCH_MAX = 6
 
 
 class TranslationService:
     def __init__(self, book: Book, book_key: str, translator: Translator, glossary: Glossary,
-                 store: TranslationStore | None = None, source_lang: str = "en"):
+                 store: TranslationStore | None = None, source_lang: str = "en",
+                 lookahead_chars: int = DEFAULT_LOOKAHEAD):
         self.book, self.book_key, self.translator, self.glossary = book, book_key, translator, glossary
         self.store = store or TranslationStore()
         self.source_lang = source_lang
-        self.translate_all = False
+        self.lookahead_chars = lookahead_chars
+        self.translate_all = False        # export: translate everything that is still missing
         self.need_glossary = not glossary.entries
 
         self.on_paragraphs: Callable[[list[tuple[int, int, str]]], None] = lambda items: None
@@ -105,16 +119,38 @@ class TranslationService:
         self.need_glossary = False
 
     # ------------------------------------------------------------ worker
+    def _window(self) -> tuple[int, int]:
+        """[begin, end) of paragraphs that should be translated now. Paragraphs from the
+        reader's position onwards come first; [begin, cursor) is filled afterwards."""
+        n = len(self.order)
+        cur = min(self._cursor, max(0, n - 1))
+        if self.translate_all:
+            return 0, n
+        if self.lookahead_chars < 0:                       # whole current chapter
+            ci = self.order[cur][0]
+            begin = end = cur
+            while begin > 0 and self.order[begin - 1][0] == ci:
+                begin -= 1
+            while end < n and self.order[end][0] == ci:
+                end += 1
+            return begin, end
+        end, chars = cur + 1, 0                             # the current paragraph always counts
+        while end < n and chars < self.lookahead_chars:
+            chars += len(self.source(*self.order[end]))
+            end += 1
+        return cur, min(end, n)
+
     def _next_batch(self) -> list[tuple[int, int]]:
-        limit = len(self.order) if self.translate_all else min(len(self.order), self._cursor + LOOKAHEAD)
-        start = next((i for i in range(self._cursor, limit) if self.order[i] not in self.done), None)
-        if start is None and self.translate_all:
-            start = next((i for i in range(0, self._cursor) if self.order[i] not in self.done), None)
+        begin, end = self._window()
+        cur = max(begin, min(self._cursor, end))
+        start = next((i for i in range(cur, end) if self.order[i] not in self.done), None)
+        if start is None:
+            start = next((i for i in range(begin, cur) if self.order[i] not in self.done), None)
         if start is None:
             return []
         batch, chars, ci = [], 0, self.order[start][0]
         max_n = 1 if self._quick else BATCH_MAX
-        for i in range(start, len(self.order)):
+        for i in range(start, end):
             k = self.order[i]
             if k in self.done or k[0] != ci or len(batch) >= max_n:
                 break
@@ -168,10 +204,11 @@ class TranslationService:
                     time.sleep(3 * failures)
                 continue
             items = []
-            for k, src, text in zip(batch, sources, result):
-                self.store.put(self.book_key, k[0], k[1], src, self.translator.key, text)
+            for k, text in zip(batch, result):
                 self.done[k] = text
                 items.append((k[0], k[1], text))
+            self.store.put_many(self.book_key, self.translator.key,
+                                [(ci, pi, src, text) for (ci, pi, text), src in zip(items, sources)])
             self.on_paragraphs(items)
             done, total = self.progress()
             self.on_status(f"Tłumaczenie: {done}/{total} akapitów ({time.time() - t0:.1f} s / {len(batch)} akap.)")

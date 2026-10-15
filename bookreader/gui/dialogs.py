@@ -17,6 +17,7 @@ from ..translate.base import TranslationContext
 from ..translate.deepl import DeepLTranslator
 from ..translate.glossary import GENDERS, Entry, Glossary
 from ..translate.ollama import OllamaTranslator
+from ..translate.service import DEFAULT_LOOKAHEAD, LOOKAHEAD_CHOICES
 from .common import run_async
 
 
@@ -324,7 +325,15 @@ class TranslationSettingsDialog(QDialog):
         krow.addWidget(self.key)
         krow.addWidget(check)
 
+        self.lookahead = QComboBox()
+        for chars, label in LOOKAHEAD_CHOICES:
+            self.lookahead.addItem(label, chars)
+        self.lookahead.setCurrentIndex(max(0, self.lookahead.findData(settings.get("lookahead_chars", DEFAULT_LOOKAHEAD))))
+        self.lookahead.setToolTip("Jak daleko przed lektorem tłumaczyć. Mniej = mniej pracy karty graficznej "
+                                  "i szybsza reakcja po przeskoku; więcej = zapas przy wolnym modelu.")
+
         form = QFormLayout()
+        form.addRow("Tłumacz z wyprzedzeniem", self.lookahead)
         form.addRow(self.use_ollama)
         form.addRow("Model Ollama", mrow)
         form.addRow(self.use_deepl)
@@ -362,6 +371,7 @@ class TranslationSettingsDialog(QDialog):
         self.settings["ollama_model"] = self.model.currentText().strip()
         self.settings["deepl_key"] = self.key.text().strip()
         self.settings["deepl_formality"] = self.formality.currentData()
+        self.settings["lookahead_chars"] = self.lookahead.currentData()
         self.accept()
 
 

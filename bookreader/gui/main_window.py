@@ -25,7 +25,7 @@ from ..text.segmenter import segment_book, segment_paragraph
 from ..translate.deepl import DeepLTranslator
 from ..translate.glossary import Glossary
 from ..translate.ollama import OllamaTranslator
-from ..translate.service import TranslationService
+from ..translate.service import DEFAULT_LOOKAHEAD, TranslationService
 from ..tts.base import SAMPLE_RATE
 from ..tts.cache import AudioCache
 from ..tts.registry import EngineRegistry
@@ -560,7 +560,8 @@ class MainWindow(QMainWindow):
                 self.translation_settings()
             return False
         key = os.path.abspath(self.book.path)
-        svc = TranslationService(self.book, key, tr, self.glossary, source_lang=self.book.language or "en")
+        svc = TranslationService(self.book, key, tr, self.glossary, source_lang=self.book.language or "en",
+                                 lookahead_chars=self.library.settings.get("lookahead_chars", DEFAULT_LOOKAHEAD))
         if self.library.book(self.book.path).get("glossary_built"):
             svc.need_glossary = False
         svc.on_paragraphs = self.bridge.translated.emit
@@ -608,8 +609,9 @@ class MainWindow(QMainWindow):
             return
         for ci, pi, text in items:
             self.player.replace_paragraph(ci, pi, segment_paragraph(ci, pi, text))
-            if ci == self.shown_chapter:
-                self._rerender_timer.start()
+            self._update_paragraph(ci, pi)
+        if any(ci == self.shown_chapter for ci, _, _ in items):
+            self._on_segment(self.player.index, scroll=False)      # re-place the highlight
 
     def _on_tr_error(self, msg: str) -> None:
         self.tr_label.setText("⚠ " + msg[:120])
@@ -869,34 +871,71 @@ class MainWindow(QMainWindow):
         original.setFontPointSize(9.5)
         return normal, title, pending, original
 
+    def _insert_block(self, cur: QTextCursor, ci: int, pi: int, source: str) -> tuple[int, int]:
+        """Insert one paragraph at the cursor. Returns (block length, offset of the spoken text in it)."""
+        normal, title_fmt, pending_fmt, original_fmt = self._fmt
+        start = cur.position()
+        spoken = self.service.text_for(ci, pi) if self.translating else source
+        if spoken is None:                       # translation pending
+            cur.insertText("⏳ ", pending_fmt)
+            rel = cur.position() - start
+            cur.insertText(source, pending_fmt)
+        else:
+            rel = 0
+            cur.insertText(spoken, title_fmt if pi == -1 else normal)
+            if self._bilingual:
+                cur.insertText("\n" + source, original_fmt)
+        return cur.position() - start, rel
+
+    def _recompute_offsets(self) -> None:
+        pos, offsets = 0, {}
+        for pi, length, rel in self._blocks:
+            offsets[pi] = pos + rel
+            pos += length + 2                    # "\n\n" between paragraphs
+        self.para_offsets = offsets
+
     def _show_chapter(self, ci: int) -> None:
         ch = self.book.chapters[ci]
-        normal, title_fmt, pending_fmt, original_fmt = self._formats()
-        bilingual = self.act_bilingual.isChecked() and self.translating
+        self._fmt = self._formats()
+        self._bilingual = self.act_bilingual.isChecked() and self.translating
         doc = self.text.document()
         doc.clear()
         cur = QTextCursor(doc)
-        offsets: dict[int, int] = {}
-        first = True
+        cur.beginEditBlock()                     # one layout pass for the whole chapter
+        self._blocks: list[list] = []
         for pi, source in [(-1, ch.title)] + list(enumerate(ch.paragraphs)):
             if pi == -1 and not source:
                 continue
-            if not first:
-                cur.insertText("\n\n", normal)
-            first = False
-            spoken = self.service.text_for(ci, pi) if self.translating else source
-            if spoken is None:                       # translation pending
-                cur.insertText("⏳ ", pending_fmt)
-                offsets[pi] = cur.position()
-                cur.insertText(source, pending_fmt)
-                continue
-            offsets[pi] = cur.position()
-            cur.insertText(spoken, title_fmt if pi == -1 else normal)
-            if bilingual:
-                cur.insertText("\n" + source, original_fmt)
-        self.para_offsets = offsets
+            if self._blocks:
+                cur.insertText("\n\n", self._fmt[0])
+            length, rel = self._insert_block(cur, ci, pi, source)
+            self._blocks.append([pi, length, rel])
+        cur.endEditBlock()
+        self._recompute_offsets()
         self.shown_chapter = ci
         self.chapters.setCurrentRow(ci)
+
+    def _update_paragraph(self, ci: int, pi: int) -> None:
+        """Replace one paragraph in the shown chapter in place (no full re-render, no scroll jump)."""
+        if ci != self.shown_chapter or not hasattr(self, "_blocks"):
+            return
+        pos = 0
+        for block in self._blocks:
+            if block[0] == pi:
+                bar = self.text.verticalScrollBar()
+                keep = bar.value()
+                cur = QTextCursor(self.text.document())
+                cur.beginEditBlock()
+                cur.setPosition(pos)
+                cur.setPosition(pos + block[1], QTextCursor.KeepAnchor)
+                cur.removeSelectedText()
+                block[1], block[2] = self._insert_block(cur, ci, pi, self.service.source(ci, pi) if self.service
+                                                        else self.book.chapters[ci].paragraphs[pi])
+                cur.endEditBlock()
+                self._recompute_offsets()
+                bar.setValue(keep)
+                return
+            pos += block[1] + 2
 
     def _rerender(self) -> None:
         if self.book and self.player and self.segments:

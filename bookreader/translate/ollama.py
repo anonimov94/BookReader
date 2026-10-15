@@ -83,7 +83,8 @@ class OllamaTranslator(Translator):
 
     # ------------------------------------------------------------ chat
     def _chat(self, system: str, user: str, json_mode: bool = False, timeout: float = 600) -> str:
-        body = {"model": self.model, "stream": False, "think": False,
+        # keep_alive: the model stays in GPU memory between batches and short pauses (no reload delay)
+        body = {"model": self.model, "stream": False, "think": False, "keep_alive": "30m",
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                 "options": {"temperature": self.temperature, "num_ctx": 8192}}
         if json_mode:

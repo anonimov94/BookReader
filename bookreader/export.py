@@ -14,7 +14,7 @@ from typing import Callable
 import numpy as np
 import soundfile as sf
 
-from .audio.dsp import DSPChain, VoiceSettings
+from .audio.dsp import DSPChain, VoiceSettings, apply_prosody
 from .models import Segment, SegmentKind
 from .text.normalizer import normalize
 from .tts.base import SAMPLE_RATE, Voice
@@ -100,19 +100,22 @@ class Exporter:
         marks: list[tuple[str, int, int]] = []      # (title, start_ms, end_ms)
         position = 0
         try:
-            with ThreadPoolExecutor(max_workers=3) as pool:
+            speed, pitch = job.settings.speed, job.settings.pitch
+
+            def prepare(seg: Segment) -> np.ndarray:      # synthesis + speed/pitch in parallel workers
+                return apply_prosody(self.cache.get_or_synthesize(engine, job.voice, speech(seg), job.lang), speed, pitch)
+
+            with ThreadPoolExecutor(max_workers=4) as pool:
                 for n, (ch_title, segs) in enumerate(job.chapters, 1):
                     dsp = DSPChain(VoiceSettings.from_dict(job.settings.to_dict()))
-                    futures = [pool.submit(self.cache.get_or_synthesize, engine, job.voice, speech(s), job.lang)
-                               for s in segs]
+                    futures = [pool.submit(prepare, s) for s in segs]
                     parts = []
                     for seg, fut in zip(segs, futures):
                         if cancel.is_set():
                             for f in futures:
                                 f.cancel()
                             raise ExportCancelled()
-                        audio = dsp.prosody(fut.result())
-                        parts.append(audio)
+                        parts.append(fut.result())
                         parts.append(np.zeros(int(SAMPLE_RATE * pause_ms(seg) / 1000), dtype=np.float32))
                         done += 1
                         progress(done, total, f"Rozdział {n}/{len(job.chapters)}: {ch_title}")

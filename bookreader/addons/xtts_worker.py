@@ -69,10 +69,12 @@ class Engine:
             t = np.arange(int(24000 * 0.3)) / 24000
             np.save(out, (0.1 * np.sin(2 * np.pi * 220 * t)).astype(np.float32))
             return {}
+        import torch
         self.load()
-        gpt, emb = self.conditioning(voice)
-        res = self.tts.synthesizer.tts_model.inference(text, lang, gpt, emb, temperature=0.65,
-                                                       repetition_penalty=5.0, enable_text_splitting=False)
+        with torch.inference_mode():          # no autograd bookkeeping: faster, less GPU memory
+            gpt, emb = self.conditioning(voice)
+            res = self.tts.synthesizer.tts_model.inference(text, lang, gpt, emb, temperature=0.65,
+                                                           repetition_penalty=5.0, enable_text_splitting=False)
         wav = res["wav"]
         wav = wav.cpu().numpy() if hasattr(wav, "cpu") else np.asarray(wav)
         np.save(out, wav.astype(np.float32))

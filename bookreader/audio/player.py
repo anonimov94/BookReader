@@ -13,6 +13,7 @@ real sentences while reading continues.
 from __future__ import annotations
 
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from typing import Callable
 
@@ -24,10 +25,11 @@ from ..text.normalizer import normalize
 from ..tts.base import SAMPLE_RATE, Voice
 from ..tts.cache import AudioCache
 from ..tts.registry import EngineRegistry
-from .dsp import DSPChain
+from .dsp import DSPChain, apply_prosody
 
 BLOCK = 1024
-PREFETCH = 4
+PREFETCH_MIN, PREFETCH_MAX = 4, 10     # sentences prepared ahead; grows when synthesis is slow
+WORKERS = 4
 
 Position = tuple[int, int, int]      # (chapter, paragraph, sentence number within paragraph)
 
@@ -61,7 +63,9 @@ class Player:
         self.on_finished: Callable[[], None] = lambda: None
         self.on_paused_by_timer: Callable[[], None] = lambda: None
 
-        self._pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix="tts")
+        self._pool = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="tts")
+        self._prefetch_n = PREFETCH_MIN
+        self._para_start: dict[tuple[int, int], int] | None = None   # (chapter, paragraph) -> first index
         self._futures: dict[tuple, Future] = {}
         self._futures_lock = threading.Lock()
         self._seg_lock = threading.RLock()
@@ -79,6 +83,7 @@ class Player:
         self.stop()
         with self._seg_lock:
             self.segments = segments
+            self._para_start = None
             self.index = max(0, min(start, len(segments) - 1)) if segments else 0
         if lang:
             self.lang = lang
@@ -87,11 +92,12 @@ class Player:
     def replace_paragraph(self, chapter: int, paragraph: int, new: list[Segment]) -> None:
         """Swap all segments of one paragraph (e.g. a translation arrived). Keeps the reader in place."""
         with self._seg_lock:
-            idx = [i for i, s in enumerate(self.segments) if s.chapter == chapter and s.paragraph == paragraph]
-            if not idx:
+            span = self._para_span(chapter, paragraph)
+            if span is None:
                 return
-            a, b = idx[0], idx[-1] + 1
+            a, b = span
             self.segments[a:b] = new
+            self._para_start = None
             delta = len(new) - (b - a)
             if self.index >= b:
                 self.index += delta
@@ -111,28 +117,44 @@ class Player:
             self.seek(self.index)
 
     # ---------------------------------------------------------------- positions
+    def _index(self) -> dict[tuple[int, int], int]:
+        """Lazily rebuilt map of paragraph -> first segment index (O(1) lookups while reading)."""
+        if self._para_start is None:
+            idx: dict[tuple[int, int], int] = {}
+            for i, s in enumerate(self.segments):
+                idx.setdefault((s.chapter, s.paragraph), i)
+            self._para_start = idx
+        return self._para_start
+
+    def _para_span(self, chapter: int, paragraph: int) -> tuple[int, int] | None:
+        a = self._index().get((chapter, paragraph))
+        if a is None:
+            return None
+        b = a
+        while b < len(self.segments) and (self.segments[b].chapter, self.segments[b].paragraph) == (chapter, paragraph):
+            b += 1
+        return a, b
+
     def position_of(self, index: int) -> Position:
         with self._seg_lock:
             if not self.segments:
                 return 0, -1, 0
             index = max(0, min(index, len(self.segments) - 1))
             s = self.segments[index]
-            k = 0
-            while index - k - 1 >= 0 and (self.segments[index - k - 1].chapter, self.segments[index - k - 1].paragraph) == (s.chapter, s.paragraph):
-                k += 1
-            return s.chapter, s.paragraph, k
+            return s.chapter, s.paragraph, index - self._index()[(s.chapter, s.paragraph)]
 
     def index_of(self, pos: Position) -> int:
         ch, para, k = pos
         with self._seg_lock:
-            first = next((i for i, s in enumerate(self.segments)
-                          if (s.chapter, s.paragraph) >= (ch, para)), len(self.segments) - 1)
-            i = first
-            while k > 0 and i + 1 < len(self.segments) and \
-                    (self.segments[i + 1].chapter, self.segments[i + 1].paragraph) == (self.segments[first].chapter, self.segments[first].paragraph):
-                i += 1
-                k -= 1
-            return max(0, i)
+            if not self.segments:
+                return 0
+            span = self._para_span(ch, para)
+            if span is None:            # paragraph no longer exists: nearest following one
+                first = next((i for i, s in enumerate(self.segments)
+                              if (s.chapter, s.paragraph) >= (ch, para)), len(self.segments) - 1)
+                return max(0, first)
+            a, b = span
+            return min(a + max(0, k), b - 1)
 
     # ---------------------------------------------------------------- control
     def play(self) -> None:
@@ -215,6 +237,10 @@ class Player:
         self.seek(i)
 
     def first_segment_of_chapter(self, chapter: int) -> int:
+        idx = self._index()
+        for p in (-1, 0):
+            if (chapter, p) in idx:
+                return idx[(chapter, p)]
         return next((i for i, s in enumerate(self.segments) if s.chapter >= chapter), len(self.segments) - 1)
 
     def shutdown(self) -> None:
@@ -237,24 +263,36 @@ class Player:
         return normalize(self.text_transform(text), self.lang, expand_numbers=self.engine.expand_numbers)
 
     def _future(self, seg: Segment) -> Future:
-        key = _key(seg)
+        """Audio for a sentence, already sped up / pitch-shifted, prepared in a worker thread."""
+        speed, pitch = round(self.dsp.settings.speed, 2), round(self.dsp.settings.pitch, 1)
+        key = _key(seg) + (speed, pitch)
         with self._futures_lock:
             f = self._futures.get(key)
             if f is None:
                 engine, voice, text, lang = self.engine, self.voice, self.speech_text(seg.text), self.lang
-                f = self._pool.submit(self.cache.get_or_synthesize, engine, voice, text, lang)
+                f = self._pool.submit(self._prepare, engine, voice, text, lang, speed, pitch)
                 self._futures[key] = f
             return f
 
+    def _prepare(self, engine, voice, text, lang, speed, pitch) -> np.ndarray:
+        t0 = time.perf_counter()
+        audio = self.cache.get_or_synthesize(engine, voice, text, lang)
+        took = time.perf_counter() - t0
+        dur = len(audio) / SAMPLE_RATE
+        # slow engine (e.g. multilingual Edge voices, XTTS on CPU): prepare more sentences ahead
+        if dur > 0 and took > 0.5 * dur:
+            self._prefetch_n = min(PREFETCH_MAX, self._prefetch_n + 1)
+        return apply_prosody(audio, speed, pitch)
+
     def _prefetch(self, index: int) -> None:
         with self._seg_lock:
-            ahead = [s for s in self.segments[index:index + PREFETCH + 1] if s.kind != SegmentKind.PENDING]
+            ahead = [s for s in self.segments[index:index + self._prefetch_n + 1] if s.kind != SegmentKind.PENDING]
         for s in ahead:
             self._future(s)
         wanted = {_key(s) for s in ahead}
         with self._futures_lock:     # forget sentences the reader no longer needs
-            if len(self._futures) > PREFETCH * 4:
-                for k in [k for k, f in self._futures.items() if k not in wanted and f.done()]:
+            if len(self._futures) > PREFETCH_MAX * 4:
+                for k in [k for k, f in self._futures.items() if k[:4] not in wanted and f.done()]:
                     self._futures.pop(k)
 
     def _pause_after(self, seg: Segment) -> int:
@@ -306,7 +344,6 @@ class Player:
                     if self._resume.is_set():
                         self._set_state(State.PLAYING)
 
-                    audio = self.dsp.prosody(audio)
                     silence = np.zeros(int(SAMPLE_RATE * self._pause_after(seg) / 1000), dtype=np.float32)
                     audio = np.concatenate([audio, silence])
 
@@ -325,9 +362,13 @@ class Player:
                     if alive():
                         with self._seg_lock:
                             # find our segment again: replace_paragraph may have shifted indices
-                            cur = next((i for i, s in enumerate(self.segments) if s is seg), None)
-                            if cur is not None:
-                                self.index = cur + 1
+                            if self.index < len(self.segments) and self.segments[self.index] is seg:
+                                self.index += 1
+                            else:
+                                span = self._para_span(seg.chapter, seg.paragraph)
+                                cur = next((i for i in range(*span) if self.segments[i] is seg), None) if span else None
+                                if cur is not None:
+                                    self.index = cur + 1
                 if alive() and self.index >= len(self.segments):
                     self.index = len(self.segments) - 1
                     self._set_state(State.STOPPED)

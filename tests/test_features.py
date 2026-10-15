@@ -175,3 +175,60 @@ def test_enable_site_packages(tmp_path):
     enable_site_packages(str(tmp_path))
     lines = (tmp_path / "python312._pth").read_text().splitlines()
     assert "import site" in lines and "#import site" not in lines and lines[0] == "Lib\\site-packages"
+
+
+def _long_book(n_chapters=3, n_paras=60):
+    return Book(path="long.epub", title="Long", language="en", chapters=[
+        Chapter(f"Chapter {c + 1}", [f"Paragraph {c}-{p}: " + "word " * 30 for p in range(n_paras)])
+        for c in range(n_chapters)])
+
+
+def test_translation_stays_near_the_reader(tmp_path):
+    book = _long_book()
+    svc = TranslationService(book, "long", FakeTranslator(), Glossary(entries=[Entry("x")]),
+                             TranslationStore(str(tmp_path / "t.sqlite")), lookahead_chars=1000)
+    svc.focus(1, 10)
+    svc.start()
+    time.sleep(1.5)
+    svc.stop()
+    done = sorted(svc.done)
+    assert done and done[0] == (1, 10)                     # starts at the reader
+    assert all(k[0] == 1 and 10 <= k[1] <= 20 for k in done), done     # ~1000 chars ahead, not the book
+    assert len(done) < 15
+
+
+def test_translation_whole_chapter_mode(tmp_path):
+    book = _long_book(n_paras=8)
+    svc = TranslationService(book, "ch", FakeTranslator(), Glossary(entries=[Entry("x")]),
+                             TranslationStore(str(tmp_path / "t.sqlite")), lookahead_chars=-1)
+    svc.focus(1, 0)
+    svc.start()
+    time.sleep(1.5)
+    svc.stop()
+    assert {k[0] for k in svc.done} == {1} and svc.chapter_done(1)
+
+
+def test_position_index_survives_replacement():
+    book = _long_book(n_chapters=2, n_paras=5)
+    segs = segment_book(book, lambda c, p, s: None)        # everything pending
+    p = Player(FakeRegistry(), FakeEngine().voices()[0], DSPChain(), None)
+    p.segments = segs
+    target = p.index_of((1, 3, 0))
+    assert (segs[target].chapter, segs[target].paragraph) == (1, 3)
+    p.replace_paragraph(0, 2, segment_paragraph(0, 2, "Raz. Dwa. Trzy."))
+    i = p.index_of((1, 3, 0))
+    assert (p.segments[i].chapter, p.segments[i].paragraph) == (1, 3)
+    assert p.index_of((0, 2, 2)) == p.index_of((0, 2, 0)) + 2
+    assert p.first_segment_of_chapter(1) == p.index_of((1, -1, 0))
+
+
+def test_book_cache_roundtrip(tmp_path, monkeypatch):
+    from bookreader import loaders
+    from .fixtures import make_epub
+    monkeypatch.setattr(loaders, "BOOK_CACHE_DIR", str(tmp_path / "cache"))
+    path = make_epub(str(tmp_path / "b.epub"))
+    first = loaders.load_book(path)
+    calls = []
+    monkeypatch.setattr(loaders, "_load", lambda *a: calls.append(a))
+    second = loaders.load_book(path)
+    assert not calls and [c.paragraphs for c in second.chapters] == [c.paragraphs for c in first.chapters]
