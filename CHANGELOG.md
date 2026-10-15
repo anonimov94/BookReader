@@ -1,5 +1,12 @@
 # Historia zmian
 
+## [Nieopublikowane]
+
+### Budowanie
+- Pliki pośrednie PyInstallera trafiają do folderu tymczasowego i są usuwane po kompilacji. Wcześniej
+  w `build\BookReader\` zostawał `BookReader.exe`, który wyglądał jak program, ale nie mógł się uruchomić
+  (`Failed to load Python DLL`). Właściwy program jest zawsze w `dist\BookReader\`.
+
 ## [0.2.0] — 2026-10-15
 
 Aktualizacja wydajności i niezawodności. Wszystkie funkcje z wersji 0.1.0 zostały zachowane.
