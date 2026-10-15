@@ -50,8 +50,50 @@ def worker_script() -> str:
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "xtts_worker.py")
 
 
+# Bump whenever the package pins below change: older installs are then repaired automatically.
+RUNTIME_SPEC = 2
+# Packages known to break XTTS when present (pulled in by newer torch/coqui releases).
+CONFLICTING = ["torchcodec"]
+CHECK_SCRIPT = ("import os, tempfile, numpy as np, soundfile as sf, torch, torchaudio, TTS; "
+                "p = os.path.join(tempfile.gettempdir(), 'bookreader_xtts_check.wav'); "
+                "sf.write(p, np.zeros(2400, 'float32'), 24000); torchaudio.load(p); os.remove(p); "
+                "print('torch', torch.__version__, 'CUDA', torch.cuda.is_available(), '| coqui-tts', TTS.__version__)")
+
+
+def status() -> str:
+    """"missing" (never installed), "ok", or "broken" (needs repair: failed/old install)."""
+    if not os.path.exists(python_exe()):
+        return "missing"
+    try:
+        with open(MARKER, encoding="utf-8") as f:
+            if json.load(f).get("spec") == RUNTIME_SPEC:
+                return "ok"
+    except (OSError, ValueError):
+        pass
+    return "broken"
+
+
 def is_installed() -> bool:
-    return os.path.exists(MARKER) and os.path.exists(python_exe())
+    return status() == "ok"
+
+
+def mark_broken() -> None:
+    """Called when XTTS fails at runtime; the app repairs it on the next start."""
+    try:
+        os.remove(MARKER)
+    except OSError:
+        pass
+
+
+def health_check(timeout: float = 300) -> tuple[bool, str]:
+    """Imports torch + XTTS and decodes a WAV inside the runtime. (ok, last output line)."""
+    try:
+        p = subprocess.run([python_exe(), "-c", CHECK_SCRIPT], capture_output=True, text=True, timeout=timeout,
+                           env=worker_env(False), creationflags=NO_WINDOW, encoding="utf-8", errors="replace")
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, str(e)
+    lines = (p.stdout + p.stderr).strip().splitlines()
+    return p.returncode == 0, lines[-1] if lines else ""
 
 
 def nvidia_gpu() -> str:
@@ -104,11 +146,47 @@ def _run(cmd: list[str], log: Log, cancel: threading.Event) -> None:
         raise RuntimeError(f"Polecenie nie powiodło się (kod {p.returncode}): {' '.join(cmd[:4])}…")
 
 
+def adopt_if_healthy() -> bool:
+    """For a "broken" status: if XTTS actually works (e.g. an install from an older app version
+    without the spec marker), just record it as OK instead of reinstalling."""
+    ok, line = health_check()
+    if ok:
+        with open(MARKER, "w", encoding="utf-8") as f:
+            json.dump({"python": PYTHON_VERSION, "gpu": nvidia_gpu(), "spec": RUNTIME_SPEC, "adopted": line}, f)
+    return ok
+
+
 def install(log: Log, progress: Progress, cancel: threading.Event) -> None:
+    """Install, or repair an existing install. Repair first removes conflicting packages and
+    re-pins versions in place; if XTTS still does not work, the Python environment is wiped
+    and installed from scratch (the downloaded voice model is kept)."""
     os.makedirs(RUNTIME_DIR, exist_ok=True)
     gpu = nvidia_gpu()
     log(f"Karta graficzna: {gpu or 'nie wykryto NVIDIA — XTTS będzie działał na procesorze (wolno)'}")
+    state = status()
+    if state == "broken":
+        log("Wykryto uszkodzoną lub starą instalację XTTS — naprawiam (usuwam kolidujące pakiety)…")
+        try:
+            _run([python_exe(), "-m", "pip", "uninstall", "-y", *CONFLICTING], log, cancel)
+        except RuntimeError:
+            pass
+    try:
+        _install_steps(gpu, log, progress, cancel)
+    except Cancelled:
+        raise
+    except Exception as e:
+        if state == "missing":
+            raise
+        log(f"Naprawa w miejscu nie pomogła ({e}). Usuwam środowisko i instaluję od nowa…")
+        shutil.rmtree(PYTHON_DIR, ignore_errors=True)
+        try:
+            os.remove(MARKER)
+        except OSError:
+            pass
+        _install_steps(gpu, log, progress, cancel)
 
+
+def _install_steps(gpu: str, log: Log, progress: Progress, cancel: threading.Event) -> None:
     # 1. portable Python
     if not os.path.exists(python_exe()):
         log(f"Pobieranie Pythona {PYTHON_VERSION} (wersja przenośna, ~11 MB)…")
@@ -142,18 +220,14 @@ def install(log: Log, progress: Progress, cancel: threading.Event) -> None:
     _run(pip + ["coqui-tts", TRANSFORMERS_PIN] + TORCH_PINS + ["--extra-index-url",
          TORCH_INDEX_CUDA if gpu else TORCH_INDEX_CPU], log, cancel)
     # leftovers from an earlier install with torch 2.9+ would make TTS demand FFmpeg DLLs
-    _run([python_exe(), "-m", "pip", "uninstall", "-y", "torchcodec"], log, cancel)
+    _run([python_exe(), "-m", "pip", "uninstall", "-y", *CONFLICTING], log, cancel)
     progress(0.95)
 
     # 5. quick check
     log("Sprawdzanie instalacji…")
-    check = ("import os, tempfile, numpy as np, soundfile as sf, torch, torchaudio, TTS; "
-             "p = os.path.join(tempfile.gettempdir(), 'bookreader_xtts_check.wav'); "
-             "sf.write(p, np.zeros(2400, 'float32'), 24000); torchaudio.load(p); os.remove(p); "
-             "print('torch', torch.__version__, 'CUDA', torch.cuda.is_available(), '| coqui-tts', TTS.__version__)")
-    _run([python_exe(), "-c", check], log, cancel)
+    _run([python_exe(), "-c", CHECK_SCRIPT], log, cancel)
     with open(MARKER, "w", encoding="utf-8") as f:
-        json.dump({"python": PYTHON_VERSION, "gpu": gpu}, f)
+        json.dump({"python": PYTHON_VERSION, "gpu": gpu, "spec": RUNTIME_SPEC}, f)
     progress(1.0)
     log("XTTS zainstalowany. Model głosu (~1,9 GB) pobierze się przy pierwszym użyciu.")
 

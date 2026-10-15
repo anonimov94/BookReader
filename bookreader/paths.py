@@ -9,6 +9,9 @@ import sys
 def _app_dir() -> str:
     """Portable mode: a `data` folder next to BookReader.exe (or the project root when run from
     source) holds everything. Otherwise %LOCALAPPDATA%/BookReader."""
+    override = os.environ.get("BOOKREADER_HOME")       # explicit data folder (tests, tools)
+    if override:
+        return override
     base = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else \
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     portable = os.path.join(base, "data")

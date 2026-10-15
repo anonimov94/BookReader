@@ -1,6 +1,6 @@
 ﻿# Builds dist\BookReader\ (folder with BookReader.exe), verifies it, and packs it into
-#   dist\BookReader-<data>.7z           (archiwum, LZMA2 ultra)
-#   dist\BookReader-<data>-setup.exe    (samorozpakowujący się, 7-Zip SFX)
+#   dist\BookReader-<wersja>.7z           (archiwum, LZMA2 ultra)
+#   dist\BookReader-<wersja>-setup.exe    (samorozpakowujący się, 7-Zip SFX)
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $py = Join-Path $root ".venv\Scripts\python.exe"
@@ -10,6 +10,16 @@ Set-Location $root
 
 Write-Host "== ikona"
 & $py packaging\make_icon.py
+
+# Processes that still use files of the previous build (BookReader itself, or programs it started
+# with its folder on PATH, e.g. an Ollama runner) would make the rebuild fail with "Access denied".
+$app = Join-Path $dist "BookReader"
+$lockers = Get-Process | Where-Object { try { $_.Path -like "$app*" -or [bool]($_.Modules | Where-Object { $_.FileName -like "$app*" }) } catch { $false } }
+foreach ($p in $lockers) {
+    Write-Host ("== zamykam proces używający plików programu: {0} ({1})" -f $p.ProcessName, $p.Id)
+    Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+}
+if ($lockers) { Start-Sleep -Seconds 2 }
 
 # Portable user data (dist\BookReader\data) survives rebuilds and never goes into the archives.
 $data = Join-Path $dist "BookReader\data"
@@ -31,7 +41,7 @@ $size = (Get-ChildItem (Join-Path $dist "BookReader") -Recurse | Where-Object { 
 Write-Host ("== rozmiar folderu: {0:N0} MB" -f $size)
 
 if (Test-Path $sevenZip) {
-    $stamp = Get-Date -Format "yyyy-MM-dd"
+    $stamp = (& $py -c "import bookreader; print(bookreader.__version__)").Trim()
     $archive = Join-Path $dist "BookReader-$stamp.7z"
     $sfx = Join-Path $dist "BookReader-$stamp-setup.exe"
     Remove-Item $archive, $sfx -ErrorAction SilentlyContinue

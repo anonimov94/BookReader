@@ -34,7 +34,7 @@ from .dialogs import (BookmarksDialog, CompareDialog, EditTranslationDialog, Exp
                       ProgressDialog, PronunciationDialog, TranslationSettingsDialog)
 from .manager import ManagerDialog
 from .setup_wizard import SetupWizard
-from ..addons import ollama_setup
+from ..addons import ollama_setup, xtts_runtime
 
 # (field, label, min, max, scale, unit)  – QSlider is integer, value = slider / scale
 SLIDERS = [
@@ -129,6 +129,8 @@ class MainWindow(QMainWindow):
         if not self.library.settings.get("setup_offered"):
             self.library.settings["setup_offered"] = True
             QTimer.singleShot(1200, lambda: self.open_setup(intro=True))
+        elif xtts_runtime.status() == "broken":
+            QTimer.singleShot(1500, self._check_xtts_runtime)
 
     # ================================================================== UI
     def _build_ui(self) -> None:
@@ -725,8 +727,26 @@ class MainWindow(QMainWindow):
             if not dlg.reopen:
                 break
 
-    def open_setup(self, preselect: list[str] | None = None, intro: bool = False) -> None:
-        wiz = SetupWizard(self, self.library.settings, preselect, intro)
+    def _check_xtts_runtime(self) -> None:
+        """XTTS add-on looks broken or outdated: verify it, and repair automatically if needed."""
+        self.statusBar().showMessage("Sprawdzam dodatek XTTS…")
+
+        def done(ok: bool):
+            if ok:
+                self.statusBar().showMessage("Dodatek XTTS działa poprawnie.", 5000)
+                self.reload_voices()
+                return
+            if not self.library.settings.get("xtts_license"):
+                return
+            self.open_setup(["xtts"], autostart=True,
+                            note="<b>Dodatek XTTS nie działa poprawnie.</b> Usuwam kolidujące pakiety i instaluję "
+                                 "go ponownie — Twoje próbki głosów i pobrany model zostają.")
+        run_async(lambda r: xtts_runtime.adopt_if_healthy(), on_done=done,
+                  on_failed=lambda m: self.statusBar().showMessage(f"Sprawdzanie XTTS: {m}", 8000))
+
+    def open_setup(self, preselect: list[str] | None = None, intro: bool = False,
+                   autostart: bool = False, note: str = "") -> None:
+        wiz = SetupWizard(self, self.library.settings, preselect, intro, autostart, note)
         wiz.changed.connect(self.reload_voices)
         wiz.exec()
         self.registry.xtts.license_accepted = self.library.settings.get("xtts_license", False)

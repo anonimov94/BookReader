@@ -232,3 +232,31 @@ def test_book_cache_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setattr(loaders, "_load", lambda *a: calls.append(a))
     second = loaders.load_book(path)
     assert not calls and [c.paragraphs for c in second.chapters] == [c.paragraphs for c in first.chapters]
+
+
+def test_xtts_runtime_status_and_marker(tmp_path, monkeypatch):
+    import json as _json
+    from bookreader.addons import xtts_runtime as rt
+    py = tmp_path / "python"
+    py.mkdir()
+    monkeypatch.setattr(rt, "PYTHON_DIR", str(py))
+    monkeypatch.setattr(rt, "MARKER", str(tmp_path / "installed.json"))
+    assert rt.status() == "missing"
+    (py / "python.exe").write_bytes(b"")
+    assert rt.status() == "broken"                                   # python but no marker
+    (tmp_path / "installed.json").write_text(_json.dumps({"spec": rt.RUNTIME_SPEC - 1}))
+    assert rt.status() == "broken"                                   # older pins -> repair
+    (tmp_path / "installed.json").write_text(_json.dumps({"spec": rt.RUNTIME_SPEC}))
+    assert rt.status() == "ok" and rt.is_installed()
+    rt.mark_broken()
+    assert rt.status() == "broken"
+
+
+def test_clean_env_strips_bundle_path(monkeypatch, tmp_path):
+    import os as _os
+    import sys as _sys
+    from bookreader.addons.ollama_setup import clean_env
+    bundle = tmp_path / "_internal"
+    monkeypatch.setattr(_sys, "_MEIPASS", str(bundle), raising=False)
+    monkeypatch.setenv("PATH", _os.pathsep.join([str(bundle), str(bundle / "torch"), r"C:\Windows\System32"]))
+    assert clean_env()["PATH"] == r"C:\Windows\System32"

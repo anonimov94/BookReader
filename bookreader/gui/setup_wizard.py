@@ -104,7 +104,8 @@ def components() -> list[Component]:
 class SetupWizard(QDialog):
     changed = Signal()
 
-    def __init__(self, parent, settings: dict, preselect: list[str] | None = None, intro: bool = False):
+    def __init__(self, parent, settings: dict, preselect: list[str] | None = None, intro: bool = False,
+                 autostart: bool = False, note: str = ""):
         super().__init__(parent)
         self.setWindowTitle("Instalator dodatków")
         self.resize(820, 680)
@@ -114,7 +115,12 @@ class SetupWizard(QDialog):
         self.status: dict[str, QLabel] = {}
         self.worker = None
 
+        self._autostart = autostart
         lay = QVBoxLayout(self)
+        if note:
+            info = QLabel(note)
+            info.setWordWrap(True)
+            lay.addWidget(info)
         if intro:
             hello = QLabel("<b>Witaj w BookReader!</b> Program już działa z głosami online (Edge). "
                            "Zaznacz, co jeszcze chcesz doinstalować — możesz to zrobić teraz albo później "
@@ -191,6 +197,9 @@ class SetupWizard(QDialog):
                 if ok:
                     self.checks[key].setChecked(False)
             self._update_summary()
+            if self._autostart and self.install_btn.isEnabled():
+                self._autostart = False
+                self._install()
         self.installed = {}
         run_async(work, on_done=done)
 

@@ -3,12 +3,16 @@
 Czytnik książek **EPUB i PDF na głos** dla Windows — z naturalnymi lektorami, pełną regulacją głosu,
 tłumaczeniem angielskich książek na polski w locie, eksportem do audiobooka i klonowaniem głosu.
 
-![status](https://img.shields.io/badge/platforma-Windows%2010%2F11-blue) ![python](https://img.shields.io/badge/python-3.12-blue)
+![wersja](https://img.shields.io/badge/wersja-0.2.0-green) ![status](https://img.shields.io/badge/platforma-Windows%2010%2F11-blue) ![python](https://img.shields.io/badge/python-3.12-blue)
+
+> **Aktualizacja 0.2.0** — tłumaczenie tylko w pobliżu czytanego miejsca (zamiast wielu stron naraz),
+> samonaprawa dodatku XTTS, płynniejsze czytanie, szybszy start. Szczegóły: [Co nowego](#co-nowego-changelog).
 
 ---
 
 ## Spis treści
 
+- [Co nowego (changelog)](#co-nowego-changelog)
 - [Możliwości](#możliwości)
 - [Szybki start (gotowy program .exe)](#szybki-start-gotowy-program-exe)
 - [Instalator dodatków](#instalator-dodatków)
@@ -22,6 +26,32 @@ tłumaczeniem angielskich książek na polski w locie, eksportem do audiobooka i
 - [Architektura](#architektura)
 - [Rozwiązywanie problemów](#rozwiązywanie-problemów)
 - [Licencje i uwagi prawne](#licencje-i-uwagi-prawne)
+
+---
+
+## Co nowego (changelog)
+
+### 0.2.0 — aktualizacja wydajności i niezawodności
+
+Wszystkie funkcje z 0.1.0 zostały zachowane. Pełna lista: [CHANGELOG.md](CHANGELOG.md).
+
+**Naprawione**
+- Tłumaczenie obejmowało za dużo naraz (zawsze 40 akapitów do przodu — kilka stron). Teraz tłumaczy tylko
+  najbliższy fragment (domyślnie ~2 min czytania) i pomija akapity, które już minąłeś.
+- Instalacja XTTS kończyła się błędem przez niezgodne wersje bibliotek (`transformers` 5.x, PyTorch 2.9+).
+  Instalator przypina zgodne wersje (PyTorch 2.8 z CUDA 12.8, `transformers<5`).
+- Ollama uruchomiona z programu blokowała jego pliki i uniemożliwiała aktualizację — teraz startuje
+  z czystym środowiskiem (tak samo proces XTTS).
+
+**Nowe**
+- Wybór wyprzedzenia tłumaczenia (od bieżącego akapitu do całego rozdziału).
+- Samonaprawa XTTS przy starcie: kolidujące pakiety są usuwane, dodatek instaluje się ponownie.
+- Tryb przenośny: folder `data` obok `BookReader.exe`.
+
+**Szybciej**
+- Brak przerw między zdaniami (tempo/wysokość liczone z wyprzedzeniem), samoregulujący się bufor dla
+  wolnych głosów, tekst nie przeskakuje przy dopisywaniu tłumaczeń, start bez czekania na sieć,
+  natychmiastowe ponowne otwieranie książek, model tłumacza trzymany w pamięci karty.
 
 ---
 
@@ -40,7 +70,7 @@ tłumaczeniem angielskich książek na polski w locie, eksportem do audiobooka i
 
 ## Szybki start (gotowy program .exe)
 
-1. Pobierz `BookReader-<data>-setup.exe` (lub archiwum `.7z`) z [Releases](../../releases)
+1. Pobierz `BookReader-<wersja>-setup.exe` (lub archiwum `.7z`) z [Releases](../../releases)
    albo zbuduj go samodzielnie ([Budowanie .exe](#budowanie-exe)).
 2. Uruchom `setup.exe` i wskaż folder — program rozpakuje się do `BookReader\`.
 3. Uruchom `BookReader\BookReader.exe`.
@@ -66,8 +96,11 @@ postęp i dziennik instalacji. Nic nie trzeba wpisywać w konsoli.
 | XTTS v2 | ~5,5 GB | klonowanie głosu, dodatkowi lektorzy (zalecana karta NVIDIA) |
 
 XTTS instaluje się do **osobnego, przenośnego środowiska Pythona** (PyTorch 2.8 + CUDA 12.8 + coqui-tts) —
-nie zmienia nic w systemie ani w innych instalacjach Pythona. Ponowne kliknięcie *Zainstaluj* naprawia
-uszkodzoną instalację bez pobierania wszystkiego od nowa.
+nie zmienia nic w systemie ani w innych instalacjach Pythona.
+
+**Samonaprawa**: przy każdym starcie program sprawdza dodatek XTTS. Jeśli nie działa lub pochodzi ze starszej
+wersji, sam usuwa kolidujące pakiety i instaluje go ponownie (gdy to nie wystarczy — czyści środowisko
+i instaluje od zera). Pobrany model i Twoje próbki głosów zostają.
 
 ## Obsługa
 
@@ -95,7 +128,9 @@ uszkodzoną instalację bez pobierania wszystkiego od nowa.
 Po otwarciu angielskiej książki program zapyta, czy tłumaczyć ją na polski (później: `Ctrl+T`).
 
 - Tłumaczy **całymi akapitami z kontekstem** poprzedniego fragmentu, zaczynając od miejsca, w którym czytasz,
-  ok. 40 akapitów do przodu. Pierwszy akapit idzie osobno, żeby lektor ruszył szybko.
+  i tylko tyle do przodu, ile ustawisz w *Ustawieniach tłumaczenia → Tłumacz z wyprzedzeniem*
+  (domyślnie ~2 minuty czytania; do wyboru od bieżącego akapitu do całego rozdziału). Akapity, które już
+  minąłeś, nie są tłumaczone. Pierwszy akapit idzie osobno, żeby lektor ruszył szybko.
 - Przy pierwszym tłumaczeniu model buduje **słownik postaci**: imiona i nazwy, płeć bohaterów, narracja
   pierwszo- czy trzecioosobowa i **płeć narratora** (żeby było „powiedziałem” / „powiedziałam”), gatunek, forma
   zwracania się. Wszystko można poprawić: *Tłumaczenie → Słownik postaci i stylu*.
@@ -129,6 +164,7 @@ Przy włączonym tłumaczeniu najpierw tłumaczy wybrane rozdziały. ffmpeg jest
 - **Tryb przenośny**: jeśli obok `BookReader.exe` istnieje folder `data`, wszystko (dodatki, głosy, ustawienia,
   zakładki, tłumaczenia, pamięć podręczna) trafia tam. Taki folder można przenieść na inny dysk lub pendrive.
   Aby włączyć: utwórz pusty folder `data` obok `BookReader.exe`.
+- Zmienna środowiskowa `BOOKREADER_HOME` wskazuje dowolny folder danych.
 - W przeciwnym razie: `%LOCALAPPDATA%\BookReader`.
 
 ```
@@ -207,7 +243,8 @@ tests/              testy (pytest) z własnymi przykładowymi książkami
 | Brak głosów Edge | wymagany internet; offline użyj Piper lub XTTS |
 | PDF bez tekstu („skan”) | zainstaluj OCR w Instalatorze dodatków i otwórz książkę ponownie |
 | Tłumaczenie nie rusza | *Narzędzia → Głosy i modele → Ollama*: czy działa i ma pobrany model; albo wpisz klucz DeepL |
-| XTTS: błąd instalacji | otwórz Instalator ponownie i kliknij *Zainstaluj* (naprawa); dziennik pokazuje szczegóły |
+| XTTS: błąd instalacji | uruchom program ponownie — naprawi dodatek sam; można też kliknąć *Zainstaluj* w Instalatorze dodatków |
+| Tłumaczy za dużo / za mało naprzód | *Tłumaczenie → Ustawienia tłumaczenia → Tłumacz z wyprzedzeniem* |
 | XTTS bardzo wolny | brak karty NVIDIA — XTTS działa wtedy na procesorze |
 | Czytanie się zacina | głosy wielojęzyczne Edge generują się wolniej; wybierz Zofię/Marka lub Piper |
 

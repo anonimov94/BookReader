@@ -138,9 +138,19 @@ class XTTSEngine(TTSEngine):
             env = xtts_runtime.worker_env(True)
             if self._dummy:
                 env["XTTS_WORKER_DUMMY"] = "1"
-            self._worker = WorkerProcess(self._python or xtts_runtime.python_exe(), xtts_runtime.worker_script(),
-                                         env, lambda m: self.on_log(m))
-            info = self._worker.call("load")
+            try:
+                self._worker = WorkerProcess(self._python or xtts_runtime.python_exe(), xtts_runtime.worker_script(),
+                                             env, lambda m: self.on_log(m))
+                info = self._worker.call("load")
+            except Exception as e:
+                if self._worker:
+                    self._worker.close()
+                    self._worker = None
+                if self._python is None and ("Error" in str(e) or "zakończył" in str(e)):
+                    xtts_runtime.mark_broken()      # repaired automatically on the next start
+                    raise RuntimeError(f"XTTS nie działa ({e}). Zostanie naprawiony automatycznie "
+                                       "przy następnym uruchomieniu programu.") from e
+                raise
             self._speakers = info.get("speakers", [])
             self.device = info.get("device", "")
 
