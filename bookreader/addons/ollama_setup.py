@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -27,6 +28,19 @@ def find_ollama() -> str | None:
     return shutil.which("ollama")
 
 
+def clean_env() -> dict:
+    """Environment for external programs started from the packaged app: without the bundle's
+    folder on PATH, so they never load (and lock) BookReader's own DLLs such as msvcp140.dll."""
+    env = dict(os.environ)
+    bundle = getattr(sys, "_MEIPASS", None)
+    if bundle:
+        bundle = os.path.normcase(os.path.abspath(bundle))
+        parts = [p for p in env.get("PATH", "").split(os.pathsep)
+                 if p and not os.path.normcase(os.path.abspath(p)).startswith(bundle)]
+        env["PATH"] = os.pathsep.join(parts)
+    return env
+
+
 def is_running() -> bool:
     try:
         return requests.get(f"{HOST}/api/version", timeout=1.5).ok
@@ -41,8 +55,8 @@ def ensure_running(timeout: float = 25) -> bool:
     exe = find_ollama()
     if not exe:
         return False
-    subprocess.Popen([exe, "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     creationflags=NO_WINDOW | DETACHED, close_fds=True)
+    subprocess.Popen([exe, "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=os.path.dirname(exe),
+                     env=clean_env(), creationflags=NO_WINDOW | DETACHED, close_fds=True)
     deadline = time.time() + timeout
     while time.time() < deadline:
         if is_running():
@@ -61,7 +75,7 @@ def install(log, progress, cancel: threading.Event) -> None:
         log("Instalowanie Ollama (bez okien, dla bieżącego użytkownika)…")
         progress(None)
         code = subprocess.run([path, "/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES"],
-                              creationflags=NO_WINDOW).returncode
+                              env=clean_env(), creationflags=NO_WINDOW).returncode
         try:
             os.remove(path)
         except OSError:

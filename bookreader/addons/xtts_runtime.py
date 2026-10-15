@@ -65,7 +65,8 @@ def nvidia_gpu() -> str:
 
 
 def worker_env(license_accepted: bool) -> dict:
-    env = dict(os.environ)
+    from .ollama_setup import clean_env
+    env = clean_env()                                 # never load the packaged app's DLLs into torch
     env["TTS_HOME"] = MODELS_DIR                      # model download location
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONNOUSERSITE"] = "1"
