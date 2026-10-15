@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.idea/
+tests/samples/
+dist/
+build/
+packaging/BookReader.ico
+packaging/BookReader.png
